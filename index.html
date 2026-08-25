@@ -1,0 +1,198 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#0d1117">
+<title>Interview</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: #0d1117; color: #e6edf3;
+    font: 17px/1.55 -apple-system, system-ui, sans-serif;
+    padding: env(safe-area-inset-top) 14px calc(96px + env(safe-area-inset-bottom));
+  }
+  header { position: sticky; top: 0; background: #0d1117; padding: 12px 0 8px; z-index: 2; }
+  #heard { color: #7d8590; font-size: 14px; min-height: 20px; margin: 0 0 8px;
+           overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .card { background: #161b22; border: 1px solid #30363d; border-radius: 12px;
+          padding: 14px 16px; margin: 0 0 12px; }
+  .card h2 { font-size: 15px; color: #7d8590; font-weight: 600; margin: 0 0 8px; }
+  .card ul { margin: 0; padding-left: 20px; }
+  .card li { margin: 0 0 8px; font-size: 19px; }
+  .card p { margin: 0 0 8px; font-size: 19px; }
+  .err { color: #ff7b72; font-size: 15px; }
+  #bar { position: fixed; left: 0; right: 0; bottom: 0; display: flex; gap: 10px;
+         padding: 12px 14px calc(12px + env(safe-area-inset-bottom));
+         background: #0d1117; border-top: 1px solid #30363d; }
+  button { flex: 1; padding: 16px; font-size: 17px; font-weight: 600; border-radius: 12px;
+           border: 1px solid #30363d; background: #21262d; color: #e6edf3; }
+  #mic.on { background: #1f6feb; border-color: #1f6feb; }
+  #ask { flex: 0 0 96px; }
+  #cfg { flex: 0 0 56px; font-size: 20px; }
+</style>
+</head>
+<body>
+
+<header><p id="heard">tap Listen</p></header>
+<main id="out"></main>
+
+<div id="bar">
+  <button id="mic">Listen</button>
+  <button id="ask">Ask</button>
+  <button id="cfg">⚙</button>
+</div>
+
+<script>
+const RESUME_URL = 'https://kazemisoroush.github.io/resume/resume.txt';
+const MODEL = 'claude-opus-5';
+
+const $ = id => document.getElementById(id);
+const out = $('out'), heard = $('heard');
+
+// --- is that a question worth answering? ---
+const isQuestion = t =>
+  /\?\s*$/.test(t) ||
+  /^(what|why|how|when|where|who|which|do|does|did|are|is|was|were|can|could|would|will|have|has|tell|walk|describe|explain|give|talk)\b/i.test(t.trim());
+
+if (location.search.includes('test')) {
+  const ok = (t, want) => console.assert(isQuestion(t) === want, t);
+  ok('what is your biggest weakness?', true);
+  ok('Tell me about a time you failed', true);
+  ok('Walk me through your architecture', true);
+  ok('so, yeah, we use terraform here', false);
+  ok('I joined the company in 2019', false);
+  console.log('tests done');
+}
+
+// --- config ---
+const key = () => localStorage.key_ || '';
+$('cfg').onclick = () => {
+  const k = prompt('Anthropic API key (sk-ant-...)', key());
+  if (k !== null) localStorage.key_ = k.trim();
+};
+if (!key()) $('cfg').click();
+
+// --- resume as the system prompt, fetched from the live résumé ---
+let system = null;
+const systemPrompt = async () => system ??= [{
+  type: 'text',
+  cache_control: { type: 'ephemeral' },
+  text: `You are Soroush Kazemi in a live job interview. Answer in his voice, first person.
+
+Rules:
+- Short scannable bullet hints, not paragraphs. Max 5 bullets, one line each.
+- Concrete: name the tech, the scale, the outcome. No filler, no preamble, no "great question".
+- If it is a behavioural question, shape the bullets as situation / what I did / result.
+- Only claim what the résumé supports.
+
+His résumé:
+${await fetch(RESUME_URL).then(r => r.text())}`
+}];
+
+// --- ask claude ---
+let inflight;
+async function ask(q) {
+  inflight?.abort();
+  inflight = new AbortController();
+
+  const card = document.createElement('div');
+  card.className = 'card';
+  card.innerHTML = '<h2></h2><div>…</div>';
+  card.querySelector('h2').textContent = q;
+  out.prepend(card);
+  const body = card.querySelector('div');
+
+  const send = fast => fetch('https://api.anthropic.com/v1/messages', {
+    method: 'POST',
+    signal: inflight.signal,
+    headers: {
+      'content-type': 'application/json',
+      'x-api-key': key(),
+      'anthropic-version': '2023-06-01',
+      'anthropic-dangerous-direct-browser-access': 'true',
+      ...(fast && { 'anthropic-beta': 'fast-mode-2026-02-01' })
+    },
+    body: JSON.stringify({
+      model: MODEL,
+      max_tokens: 1024,
+      stream: true,
+      output_config: { effort: 'low' },
+      ...(fast && { speed: 'fast' }),
+      system: system,
+      messages: [{ role: 'user', content: q }]
+    })
+  });
+
+  try {
+    await systemPrompt();
+    let res = await send(true);
+    if (!res.ok) res = await send(false);   // fast mode unavailable or rate limited
+    if (!res.ok) throw new Error(`${res.status} ${await res.text()}`);
+
+    let text = '', buf = '';
+    const reader = res.body.pipeThrough(new TextDecoderStream()).getReader();
+    for (;;) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buf += value;
+      const lines = buf.split('\n');
+      buf = lines.pop();
+      for (const line of lines) {
+        if (!line.startsWith('data: ')) continue;
+        const ev = JSON.parse(line.slice(6));
+        if (ev.type === 'content_block_delta' && ev.delta.type === 'text_delta') {
+          text += ev.delta.text;
+          body.innerHTML = render(text);
+        }
+      }
+    }
+  } catch (e) {
+    if (e.name !== 'AbortError') body.innerHTML = `<p class="err">${e.message}</p>`;
+  }
+}
+
+// bullets and bold are all the model emits
+const esc = s => s.replace(/[<&]/g, c => c === '<' ? '&lt;' : '&amp;');
+const render = t => t.split('\n').filter(l => l.trim()).map(l => {
+  const b = esc(l).replace(/\*\*(.+?)\*\*/g, '<b>$1</b>');
+  return /^\s*[-*]\s/.test(l) ? `<ul><li>${b.replace(/^\s*[-*]\s/, '')}</li></ul>` : `<p>${b}</p>`;
+}).join('');
+
+// --- listening ---
+const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+let rec, on = false, last = '', wake;
+
+$('mic').onclick = async () => {
+  on = !on;
+  $('mic').classList.toggle('on', on);
+  $('mic').textContent = on ? 'Stop' : 'Listen';
+  if (!on) { wake?.release(); wake = null; return rec?.stop(); }
+
+  wake = await navigator.wakeLock?.request('screen').catch(() => null);
+  if (!SR) return heard.innerHTML = '<span class="err">no speech recognition in this browser — use Chrome or Safari</span>';
+
+  rec = new SR();
+  rec.continuous = true;
+  rec.interimResults = true;
+  rec.lang = 'en-AU';
+  rec.onresult = e => {
+    for (let i = e.resultIndex; i < e.results.length; i++) {
+      const t = e.results[i][0].transcript.trim();
+      heard.textContent = t;
+      if (e.results[i].isFinal && t.split(' ').length > 2) {
+        last = t;
+        if (isQuestion(t)) ask(t);
+      }
+    }
+  };
+  rec.onend = () => on && rec.start();   // chrome cuts the stream every ~60s
+  rec.onerror = e => e.error === 'not-allowed' && (heard.textContent = 'mic blocked');
+  rec.start();
+};
+
+$('ask').onclick = () => last && ask(last);
+</script>
+</body>
+</html>
