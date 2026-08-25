@@ -47,8 +47,9 @@
 <script>
 const RESUME_URL = 'https://kazemisoroush.github.io/resume/resume.txt';
 const MODEL = 'claude-opus-5';
-// served by server.mjs => answers come from `claude -p` on the subscription, no key
-const LOCAL = location.hostname !== 'kazemisoroush.github.io';
+// served by our own backend (server.mjs or the Lambda) => answers come from
+// `claude -p` on the subscription, gated by a passphrase instead of an API key
+const OURS = location.hostname !== 'kazemisoroush.github.io';
 
 const $ = id => document.getElementById(id);
 const out = $('out'), heard = $('heard');
@@ -70,12 +71,14 @@ if (location.search.includes('test')) {
 
 // --- config ---
 const key = () => localStorage.key_ || '';
+const pass = () => localStorage.pass_ || '';
 $('cfg').onclick = () => {
-  const k = prompt('Anthropic API key (sk-ant-...)', key());
-  if (k !== null) localStorage.key_ = k.trim();
+  const label = OURS ? 'Passphrase' : 'Anthropic API key (sk-ant-...)';
+  const v = prompt(label, OURS ? pass() : key());
+  if (v === null) return;
+  if (OURS) localStorage.pass_ = v.trim(); else localStorage.key_ = v.trim();
 };
-if (!key() && !LOCAL) $('cfg').click();
-if (LOCAL) $('cfg').hidden = true;
+if (OURS ? !pass() : !key()) $('cfg').click();
 
 // --- resume as the system prompt, fetched from the live résumé ---
 let system = null;
@@ -130,8 +133,12 @@ async function ask(q) {
 
   try {
     let res;
-    if (LOCAL) {
-      res = await fetch('/ask', { method: 'POST', signal: inflight.signal, body: JSON.stringify({ q }) });
+    if (OURS) {
+      res = await fetch('/ask', {
+        method: 'POST', signal: inflight.signal,
+        body: JSON.stringify({ q, pass: pass() })
+      });
+      if (res.status === 401) { localStorage.removeItem('pass_'); $('cfg').click(); }
     } else {
       await systemPrompt();
       res = await send(true);
