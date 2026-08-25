@@ -47,6 +47,8 @@
 <script>
 const RESUME_URL = 'https://kazemisoroush.github.io/resume/resume.txt';
 const MODEL = 'claude-opus-5';
+// served by server.mjs => answers come from `claude -p` on the subscription, no key
+const LOCAL = location.hostname !== 'kazemisoroush.github.io';
 
 const $ = id => document.getElementById(id);
 const out = $('out'), heard = $('heard');
@@ -72,7 +74,8 @@ $('cfg').onclick = () => {
   const k = prompt('Anthropic API key (sk-ant-...)', key());
   if (k !== null) localStorage.key_ = k.trim();
 };
-if (!key()) $('cfg').click();
+if (!key() && !LOCAL) $('cfg').click();
+if (LOCAL) $('cfg').hidden = true;
 
 // --- resume as the system prompt, fetched from the live résumé ---
 let system = null;
@@ -126,9 +129,14 @@ async function ask(q) {
   });
 
   try {
-    await systemPrompt();
-    let res = await send(true);
-    if (!res.ok) res = await send(false);   // fast mode unavailable or rate limited
+    let res;
+    if (LOCAL) {
+      res = await fetch('/ask', { method: 'POST', signal: inflight.signal, body: JSON.stringify({ q }) });
+    } else {
+      await systemPrompt();
+      res = await send(true);
+      if (!res.ok) res = await send(false);   // fast mode unavailable or rate limited
+    }
     if (!res.ok) throw new Error(`${res.status} ${await res.text()}`);
 
     let text = '', buf = '';
@@ -136,6 +144,7 @@ async function ask(q) {
     for (;;) {
       const { value, done } = await reader.read();
       if (done) break;
+      if (LOCAL) { text += value; body.innerHTML = render(text); continue; }
       buf += value;
       const lines = buf.split('\n');
       buf = lines.pop();
