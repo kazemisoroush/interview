@@ -34,7 +34,7 @@ func TestInterviewCICDStackTrustsMainBranchOnly(t *testing.T) {
 					"Condition": map[string]any{
 						"StringEquals": map[string]any{
 							"token.actions.githubusercontent.com:aud": "sts.amazonaws.com",
-							"token.actions.githubusercontent.com:sub": "repo:kazemisoroush/interview:ref:refs/heads/main",
+							"token.actions.githubusercontent.com:sub": deploySubjects,
 						},
 					},
 				}),

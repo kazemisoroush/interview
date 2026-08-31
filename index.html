@@ -46,42 +46,34 @@ const MODEL = 'claude-opus-5';
 // `claude -p` on the subscription, gated by a passphrase instead of an API key
 const OURS = location.hostname !== 'kazemisoroush.github.io';
 
-// How the microphone stream is cut into questions. Both are real-world knobs, not
-// ideals: too short and a thinking pause splits one question in two, too long and
-// the answer lands after the silence already got awkward.
-// ponytail: fixed timings, make them adapt to the speaker only if real interviews need it
-const GAP = 900;      // ms of silence that ends an utterance
-const STITCH = 4000;  // ms within which the next utterance is still the same question
+// Silence that means "they stopped talking", not merely "they drew breath". This has
+// to sit above a natural speaking pause: below it, one question flushes two or three
+// times, and every flush aborts and erases the answer the last one was still drawing.
+// ponytail: one fixed timing, make it adapt to the speaker only if real interviews need it
+const GAP = 1400;
 
 const $ = id => document.getElementById(id);
 const out = $('out'), heard = $('heard');
 
-// --- the two pure decisions, checked under ?test ---
-
-// A pause mid-question ends an utterance early. If the interviewer picked back up
-// this soon it was one question, so re-ask the whole thing rather than the tail.
-// Capped so a slow talker cannot grow the prefix without bound.
-const stitch = (prev, gap, t) => gap < STITCH && prev ? (prev + ' ' + t).slice(-600) : t;
+// --- the one pure decision, checked under ?test ---
 
 // The model replies SKIP when the utterance was not a question. While the first
 // letters are still streaming, "S" could still become either SKIP or a real answer.
 const verdict = t => {
   const s = t.trim().toLowerCase();
   if (s.length < 4) return 'skip'.startsWith(s) ? 'wait' : 'show';
-  return s.startsWith('skip') ? 'skip' : 'show';
+  return /^skip\b/.test(s) ? 'skip' : 'show';
 };
 
 if (location.search.includes('test')) {
   const eq = (got, want, msg) => console.assert(got === want, msg, got);
-  eq(stitch('why did you', 500, 'leave'), 'why did you leave', 'stitches a split question');
-  eq(stitch('why did you leave', 9000, 'tell me about kafka'), 'tell me about kafka', 'keeps a new question separate');
-  eq(stitch('', 100, 'first thing said'), 'first thing said', 'nothing to stitch onto');
   eq(verdict(''), 'wait', 'empty is undecided');
   eq(verdict('S'), 'wait', 'could still become SKIP');
   eq(verdict('Ski'), 'wait', 'still could');
   eq(verdict('SKIP'), 'skip', 'the skip sentinel');
   eq(verdict('skip'), 'skip', 'lowercase too');
   eq(verdict('Sydney based, 6 years'), 'show', 'a real answer starting with S');
+  eq(verdict('Skipping the migration was not an option'), 'show', 'SKIP must be the whole word');
   eq(verdict('- I ran the migration'), 'show', 'a bullet');
   console.log('tests done');
 }
@@ -189,7 +181,9 @@ async function ask(q) {
     const reader = res.body.pipeThrough(new TextDecoderStream()).getReader();
     for (;;) {
       const { value, done } = await reader.read();
-      if (done) break;
+      // Released here rather than in `finally`: between this break and `finally` there
+      // is an await, and a question arriving in that gap would erase a finished answer.
+      if (done) { if (live === card) live = null; break; }
       if (OURS) {
         text += value;                        // our backend streams plain text
       } else {
@@ -228,17 +222,14 @@ const render = t => t.split('\n').filter(l => l.trim()).map(l => {
 
 // --- listening ---
 const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
-let rec, said = '', prev = '', prevAt = 0, timer, wake, dead = false;
+let rec, said = '', timer, wake, dead = false;
 
 // One atomic utterance: everything heard since the interviewer last stopped for GAP.
 const flush = () => {
   const t = said.trim();
   said = '';
   if (t.split(/\s+/).filter(Boolean).length < 3) return;   // "mm hmm", "right", "okay"
-  const merged = stitch(prev, Date.now() - prevAt, t);
-  prev = merged;
-  prevAt = Date.now();
-  ask(merged);
+  ask(t);
 };
 
 // Browsers only open the microphone after a user gesture, so the page itself is
