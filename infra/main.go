@@ -69,8 +69,17 @@ const gitHubOIDCHost = "token.actions.githubusercontent.com"
 // gitHubAudience is the audience GitHub sets when requesting AWS credentials.
 const gitHubAudience = "sts.amazonaws.com"
 
-// deploySubject pins the trust to a push on the main branch of the interview repo.
-const deploySubject = "repo:kazemisoroush/interview:ref:refs/heads/main"
+// deploySubjects pin the trust to a push on the main branch of the interview repo.
+//
+// Two spellings, because GitHub now stamps immutable numeric ids into the subject
+// claim: it sends repo:kazemisoroush@8931595/interview@1346032883:ref:refs/heads/main
+// rather than the documented repo:owner/name form. Both are listed rather than
+// wildcarded, since a wildcard in the owner position would trust any account whose
+// name merely starts the same way.
+var deploySubjects = []any{
+	"repo:kazemisoroush/interview:ref:refs/heads/main",
+	"repo:kazemisoroush@8931595/interview@1346032883:ref:refs/heads/main",
+}
 
 // deployRoleName is the IAM role GitHub Actions assumes to deploy.
 const deployRoleName = "interview-github-actions-deploy"
@@ -94,7 +103,7 @@ func NewInterviewCICDStack(scope constructs.Construct, id string, props *awscdk.
 		&map[string]any{
 			"StringEquals": map[string]any{
 				gitHubOIDCHost + ":aud": gitHubAudience,
-				gitHubOIDCHost + ":sub": deploySubject,
+				gitHubOIDCHost + ":sub": deploySubjects,
 			},
 		},
 		jsii.String("sts:AssumeRoleWithWebIdentity"),
