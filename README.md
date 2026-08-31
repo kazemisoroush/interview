@@ -39,14 +39,14 @@ Then set the repository variables `AWS_DEPLOY_ROLE_ARN` (from the stack output) 
 `AWS_REGION`, and merge to `main` — CI deploys `InterviewStack` from there on.
 
 Finally, fill the secret. `cdk deploy` creates it empty and nothing in this repo ever
-writes to it:
+writes to it, so this is a manual step:
 
 ```sh
-aws secretsmanager put-secret-value \
-  --secret-id "$(aws cloudformation describe-stacks --stack-name InterviewStack \
-      --query 'Stacks[0].Outputs[?OutputKey==`ProviderSecretArn`].OutputValue' --output text)" \
-  --secret-string '{"CLAUDE_CODE_OAUTH_TOKEN":"...","PASSPHRASE":"..."}'
+./set-secret.sh
 ```
+
+That mints the token, generates a passphrase, writes both, forces the function to drop
+its cached copy, and prints the `#pass=` link to open. Run it again to rotate.
 
 Until that is set, `PASSPHRASE` is empty and every request is rejected. The gate fails
 closed on purpose.
@@ -58,6 +58,12 @@ gate, anyone who finds the URL runs Claude as the account holder — a rate limi
 problem, and a subscription-terms problem, since a Max plan covers one person. The
 passphrase keeps it genuinely single-user. Rotate it by writing a new secret value;
 no redeploy is needed.
+
+The page never prompts for it. Open the app as `<url>#pass=<passphrase>` once and it
+is kept in `localStorage` and stripped from the address bar, so the app is button-free
+and modal-free. A rejected secret stops the app with one message rather than one error
+per sentence. On GitHub Pages, where the browser talks to the API directly, the same
+trick carries the key as `#key=sk-ant-...`.
 
 ## Local
 
