@@ -30,7 +30,35 @@ jobs:
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
 
-      - uses: anthropics/claude-code-action@v1
+      # `secrets` is not a context a job-level `if` can read, so the check has to be a
+      # step, and every step that needs it keys off this output.
+      - id: config
+        env:
+          REVIEW_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+        run: |
+          if [ -n "${REVIEW_TOKEN}" ]; then
+            echo "configured=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "configured=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      # A repository with no token never asked for a review, which is not the same as a
+      # review that ran and stayed silent, and only the second is a defect. Starting the
+      # action without a token makes it fail rather than skip, so do not start it.
+      - if: steps.config.outputs.configured == 'false'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh pr comment ${{ github.event.pull_request.number }} --body "**🤖 Claude review: not configured**
+
+          No \`CLAUDE_CODE_OAUTH_TOKEN\` secret is set on this repository, so no review ran and nothing here says the diff is good.
+
+          **Next.** \`gh secret set CLAUDE_CODE_OAUTH_TOKEN --repo ${{ github.repository }}\`, then re-run this job.
+
+          <sub>Posted by Claude from the review workflow.</sub>"
+
+      - if: steps.config.outputs.configured == 'true'
+        uses: anthropics/claude-code-action@v1
         with:
           # A subscription token rather than an API key, so the review does not
           # need an API credit balance. Renew it with `claude setup-token`.
@@ -88,28 +116,13 @@ jobs:
 
       # A green check with no review reads exactly like an approval that never
       # came, so treat a missing verdict as a failure and say so.
-      - env:
+      - if: steps.config.outputs.configured == 'true'
+        env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           PR: ${{ github.event.pull_request.number }}
           SHA: ${{ github.event.pull_request.head.sha }}
-          REVIEW_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
         run: |
-          # A repository with no token never asked for a review, which is not the same
-          # as a review that ran and stayed silent. Only the second is a defect, so only
-          # the second is red. This mirrors the deploy job, which skips on a missing
-          # AWS_DEPLOY_ROLE_ARN rather than failing. The comment keeps it from being
-          # silent, so nobody reads the green check as an approval.
-          if [ -z "${REVIEW_TOKEN}" ]; then
-            gh pr comment "${PR}" --body "**🤖 Claude review: not configured**
-
-          No \`CLAUDE_CODE_OAUTH_TOKEN\` secret is set on this repository, so no review ran and nothing here says the diff is good.
-
-          **Next.** \`gh secret set CLAUDE_CODE_OAUTH_TOKEN --repo ${{ github.repository }}\`, then re-run this job.
-
-          <sub>Posted by Claude from the review workflow.</sub>"
-            exit 0
-          fi
           # --jq runs per page, so the counts are summed rather than read as one.
           verdicts=$(gh api --paginate "repos/${{ github.repository }}/pulls/${PR}/reviews" \
             --jq "[.[] | select(.commit_id == \"${SHA}\" and (.state == \"APPROVED\" or .state == \"CHANGES_REQUESTED\"))] | length" \
