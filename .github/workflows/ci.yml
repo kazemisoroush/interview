@@ -1,0 +1,64 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  infra:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
+        with:
+          go-version-file: infra/go.mod
+      - name: Build
+        working-directory: infra
+        run: go build ./...
+      - name: Vet
+        working-directory: infra
+        run: go vet ./...
+      - name: Test
+        working-directory: infra
+        run: go test ./...
+      - name: Install CDK
+        run: npm install -g aws-cdk@2
+      - name: Synth (cdk-nag security gate)
+        working-directory: infra
+        run: cdk synth --quiet
+        env:
+          CDK_DEFAULT_ACCOUNT: "000000000000"
+          CDK_DEFAULT_REGION: us-east-1
+          JSII_SILENCE_WARNING_UNTESTED_NODE_VERSION: "1"
+
+  deploy:
+    needs: [infra]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && vars.AWS_DEPLOY_ROLE_ARN != ''
+    # Serialize deploys: CloudFormation allows one stack update at a time, so two
+    # merges landing close together must queue, not run concurrently. cancel-in-progress
+    # stays false so every merged commit still deploys, in order, rather than being dropped.
+    concurrency:
+      group: interview-deploy
+      cancel-in-progress: false
+    # arm64 runner: this job builds the Lambda container image, and the image architecture
+    # has to match the arm64 the function is pinned to.
+    runs-on: ubuntu-24.04-arm
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
+        with:
+          go-version-file: infra/go.mod
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@7474bc4690e29a8392af63c5b98e7449536d5c3a # v4.3.1
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+      - name: Install CDK
+        run: npm install -g aws-cdk@2
+      - name: Deploy
+        working-directory: infra
+        run: cdk deploy InterviewStack --require-approval never

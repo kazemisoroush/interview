@@ -11,78 +11,108 @@
   body {
     margin: 0; background: #0d1117; color: #e6edf3;
     font: 17px/1.55 -apple-system, system-ui, sans-serif;
-    padding: env(safe-area-inset-top) 14px calc(96px + env(safe-area-inset-bottom));
+    padding: env(safe-area-inset-top) 14px calc(24px + env(safe-area-inset-bottom));
+    -webkit-tap-highlight-color: transparent;
   }
-  header { position: sticky; top: 0; background: #0d1117; padding: 12px 0 8px; z-index: 2; }
+  header { position: sticky; top: 0; background: #0d1117; padding: 12px 0 0; z-index: 2; }
   #heard { color: #7d8590; font-size: 14px; min-height: 20px; margin: 0 0 8px;
            overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  /* the only feedback between the question ending and the first token landing */
+  #prog { height: 2px; border-radius: 2px; background: #1f6feb; width: 0; opacity: 0;
+          transition: width .3s linear, opacity .3s; }
+  body.busy #prog { width: 92%; opacity: 1;
+                    transition: width 6s cubic-bezier(0,.7,.2,1), opacity .15s; }
   .card { background: #161b22; border: 1px solid #30363d; border-radius: 12px;
-          padding: 14px 16px; margin: 0 0 12px; }
+          padding: 14px 16px; margin: 12px 0 0; }
   .card h2 { font-size: 15px; color: #7d8590; font-weight: 600; margin: 0 0 8px; }
   .card ul { margin: 0; padding-left: 20px; }
   .card li { margin: 0 0 8px; font-size: 19px; }
   .card p { margin: 0 0 8px; font-size: 19px; }
   .err { color: #ff7b72; font-size: 15px; }
-  #bar { position: fixed; left: 0; right: 0; bottom: 0; display: flex; gap: 10px;
-         padding: 12px 14px calc(12px + env(safe-area-inset-bottom));
-         background: #0d1117; border-top: 1px solid #30363d; }
-  button { flex: 1; padding: 16px; font-size: 17px; font-weight: 600; border-radius: 12px;
-           border: 1px solid #30363d; background: #21262d; color: #e6edf3; }
-  #mic.on { background: #1f6feb; border-color: #1f6feb; }
-  #ask { flex: 0 0 96px; }
-  #cfg { flex: 0 0 56px; font-size: 20px; }
 </style>
 </head>
 <body>
 
-<header><p id="heard">tap Listen</p></header>
+<header>
+  <p id="heard">tap anywhere to start</p>
+  <div id="prog"></div>
+</header>
 <main id="out"></main>
-
-<div id="bar">
-  <button id="mic">Listen</button>
-  <button id="ask">Ask</button>
-  <button id="cfg">⚙</button>
-</div>
 
 <script>
 const RESUME_URL = 'https://kazemisoroush.github.io/resume/resume.txt';
 const MODEL = 'claude-opus-5';
-// served by server.mjs => answers come from `claude -p` on the subscription, no key
-const LOCAL = location.hostname !== 'kazemisoroush.github.io';
+// served by our own backend (server.mjs or the Lambda) => answers come from
+// `claude -p` on the subscription, gated by a passphrase instead of an API key
+const OURS = location.hostname !== 'kazemisoroush.github.io';
+
+// How the microphone stream is cut into questions. Both are real-world knobs, not
+// ideals: too short and a thinking pause splits one question in two, too long and
+// the answer lands after the silence already got awkward.
+// ponytail: fixed timings, make them adapt to the speaker only if real interviews need it
+const GAP = 900;      // ms of silence that ends an utterance
+const STITCH = 4000;  // ms within which the next utterance is still the same question
 
 const $ = id => document.getElementById(id);
 const out = $('out'), heard = $('heard');
 
-// --- is that a question worth answering? ---
-const isQuestion = t =>
-  /\?\s*$/.test(t) ||
-  /^(what|why|how|when|where|who|which|do|does|did|are|is|was|were|can|could|would|will|have|has|tell|walk|describe|explain|give|talk)\b/i.test(t.trim());
+// --- the two pure decisions, checked under ?test ---
+
+// A pause mid-question ends an utterance early. If the interviewer picked back up
+// this soon it was one question, so re-ask the whole thing rather than the tail.
+// Capped so a slow talker cannot grow the prefix without bound.
+const stitch = (prev, gap, t) => gap < STITCH && prev ? (prev + ' ' + t).slice(-600) : t;
+
+// The model replies SKIP when the utterance was not a question. While the first
+// letters are still streaming, "S" could still become either SKIP or a real answer.
+const verdict = t => {
+  const s = t.trim().toLowerCase();
+  if (s.length < 4) return 'skip'.startsWith(s) ? 'wait' : 'show';
+  return s.startsWith('skip') ? 'skip' : 'show';
+};
 
 if (location.search.includes('test')) {
-  const ok = (t, want) => console.assert(isQuestion(t) === want, t);
-  ok('what is your biggest weakness?', true);
-  ok('Tell me about a time you failed', true);
-  ok('Walk me through your architecture', true);
-  ok('so, yeah, we use terraform here', false);
-  ok('I joined the company in 2019', false);
+  const eq = (got, want, msg) => console.assert(got === want, msg, got);
+  eq(stitch('why did you', 500, 'leave'), 'why did you leave', 'stitches a split question');
+  eq(stitch('why did you leave', 9000, 'tell me about kafka'), 'tell me about kafka', 'keeps a new question separate');
+  eq(stitch('', 100, 'first thing said'), 'first thing said', 'nothing to stitch onto');
+  eq(verdict(''), 'wait', 'empty is undecided');
+  eq(verdict('S'), 'wait', 'could still become SKIP');
+  eq(verdict('Ski'), 'wait', 'still could');
+  eq(verdict('SKIP'), 'skip', 'the skip sentinel');
+  eq(verdict('skip'), 'skip', 'lowercase too');
+  eq(verdict('Sydney based, 6 years'), 'show', 'a real answer starting with S');
+  eq(verdict('- I ran the migration'), 'show', 'a bullet');
   console.log('tests done');
 }
 
-// --- config ---
-const key = () => localStorage.key_ || '';
-$('cfg').onclick = () => {
-  const k = prompt('Anthropic API key (sk-ant-...)', key());
-  if (k !== null) localStorage.key_ = k.trim();
-};
-if (!key() && !LOCAL) $('cfg').click();
-if (LOCAL) $('cfg').hidden = true;
+// --- config, no button: the passphrase can ride in the link as #pass=... ---
+const hash = new URLSearchParams(location.hash.slice(1));
+for (const k of ['pass', 'key']) if (hash.get(k)) localStorage[k + '_'] = hash.get(k).trim();
+if (hash.get('pass') || hash.get('key')) history.replaceState(null, '', location.pathname);
 
-// --- resume as the system prompt, fetched from the live résumé ---
+const key = () => localStorage.key_ || '';
+const pass = () => localStorage.pass_ || '';
+
+// A rejected secret rejects every utterance, so stop listening rather than stack up
+// one error card per sentence the interviewer says.
+const gate = () => {
+  dead = true;
+  rec?.stop();
+  heard.innerHTML = '<span class="err">secret rejected — reopen this page with #pass=… on the URL</span>';
+};
+
+// --- resume as the system prompt, fetched from the live resume ---
 let system = null;
 const systemPrompt = async () => system ??= [{
   type: 'text',
   cache_control: { type: 'ephemeral' },
   text: `You are Soroush Kazemi in a live job interview. Answer in his voice, first person.
+
+You are given raw speech from the interviewer's microphone. Most of it is not a
+question: small talk, their own war stories, thinking aloud, the tail of the last
+answer. If the utterance is not a question or a prompt aimed at the candidate,
+reply with exactly SKIP and nothing else.
 
 Rules:
 - Short scannable bullet hints, not paragraphs. Max 5 bullets, one line each.
@@ -95,21 +125,32 @@ ${await fetch(RESUME_URL).then(r => r.text())}`
 }];
 
 // --- ask claude ---
-let inflight;
+let inflight, live;   // live = the card whose answer is still streaming
+
 async function ask(q) {
   inflight?.abort();
-  inflight = new AbortController();
+  live?.remove();            // a superseded half-answer is noise, not history
+  live = null;
+  const ctl = inflight = new AbortController();
+  document.body.classList.add('busy');
 
-  const card = document.createElement('div');
-  card.className = 'card';
-  card.innerHTML = '<h2></h2><div>…</div>';
-  card.querySelector('h2').textContent = q;
-  out.prepend(card);
-  const body = card.querySelector('div');
+  // The card is created on the first real token, never up front: an utterance the
+  // model rules a non-question must leave no trace on screen.
+  let card = null, body = null;
+  const show = () => {
+    if (card) return;
+    card = document.createElement('div');
+    card.className = 'card';
+    card.innerHTML = '<h2></h2><div></div>';
+    card.querySelector('h2').textContent = q;
+    out.prepend(card);
+    body = card.querySelector('div');
+    live = card;
+  };
 
   const send = fast => fetch('https://api.anthropic.com/v1/messages', {
     method: 'POST',
-    signal: inflight.signal,
+    signal: ctl.signal,
     headers: {
       'content-type': 'application/json',
       'x-api-key': key(),
@@ -130,12 +171,17 @@ async function ask(q) {
 
   try {
     let res;
-    if (LOCAL) {
-      res = await fetch('/ask', { method: 'POST', signal: inflight.signal, body: JSON.stringify({ q }) });
+    if (OURS) {
+      res = await fetch('/ask', {
+        method: 'POST', signal: ctl.signal,
+        body: JSON.stringify({ q, pass: pass() })
+      });
+      if (res.status === 401) return gate();
     } else {
       await systemPrompt();
       res = await send(true);
       if (!res.ok) res = await send(false);   // fast mode unavailable or rate limited
+      if (res.status === 401 || res.status === 403) return gate();
     }
     if (!res.ok) throw new Error(`${res.status} ${await res.text()}`);
 
@@ -144,21 +190,32 @@ async function ask(q) {
     for (;;) {
       const { value, done } = await reader.read();
       if (done) break;
-      if (LOCAL) { text += value; body.innerHTML = render(text); continue; }
-      buf += value;
-      const lines = buf.split('\n');
-      buf = lines.pop();
-      for (const line of lines) {
-        if (!line.startsWith('data: ')) continue;
-        const ev = JSON.parse(line.slice(6));
-        if (ev.type === 'content_block_delta' && ev.delta.type === 'text_delta') {
-          text += ev.delta.text;
-          body.innerHTML = render(text);
+      if (OURS) {
+        text += value;                        // our backend streams plain text
+      } else {
+        buf += value;
+        const lines = buf.split('\n');
+        buf = lines.pop();
+        for (const line of lines) {
+          if (!line.startsWith('data: ')) continue;
+          const ev = JSON.parse(line.slice(6));
+          if (ev.type === 'content_block_delta' && ev.delta.type === 'text_delta')
+            text += ev.delta.text;
         }
       }
+      const v = verdict(text);
+      if (v === 'wait') continue;
+      if (v === 'skip') { ctl.abort(); return; }   // not a question, stay silent
+      show();
+      body.innerHTML = render(text);
     }
   } catch (e) {
-    if (e.name !== 'AbortError') body.innerHTML = `<p class="err">${e.message}</p>`;
+    if (e.name === 'AbortError') return;
+    show();
+    body.innerHTML = `<p class="err">${esc(e.message)}</p>`;
+  } finally {
+    if (live === card) live = null;
+    if (ctl === inflight) document.body.classList.remove('busy');
   }
 }
 
@@ -171,37 +228,50 @@ const render = t => t.split('\n').filter(l => l.trim()).map(l => {
 
 // --- listening ---
 const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
-let rec, on = false, last = '', wake;
+let rec, said = '', prev = '', prevAt = 0, timer, wake, dead = false;
 
-$('mic').onclick = async () => {
-  on = !on;
-  $('mic').classList.toggle('on', on);
-  $('mic').textContent = on ? 'Stop' : 'Listen';
-  if (!on) { wake?.release(); wake = null; return rec?.stop(); }
+// One atomic utterance: everything heard since the interviewer last stopped for GAP.
+const flush = () => {
+  const t = said.trim();
+  said = '';
+  if (t.split(/\s+/).filter(Boolean).length < 3) return;   // "mm hmm", "right", "okay"
+  const merged = stitch(prev, Date.now() - prevAt, t);
+  prev = merged;
+  prevAt = Date.now();
+  ask(merged);
+};
 
-  wake = await navigator.wakeLock?.request('screen').catch(() => null);
+// Browsers only open the microphone after a user gesture, so the page itself is
+// the button. This is the one and only tap the app ever needs.
+const arm = async () => {
   if (!SR) return heard.innerHTML = '<span class="err">no speech recognition in this browser — use Chrome or Safari</span>';
+  wake = await navigator.wakeLock?.request('screen').catch(() => null);
 
   rec = new SR();
   rec.continuous = true;
   rec.interimResults = true;
   rec.lang = 'en-AU';
   rec.onresult = e => {
+    let interim = '';
     for (let i = e.resultIndex; i < e.results.length; i++) {
       const t = e.results[i][0].transcript.trim();
-      heard.textContent = t;
-      if (e.results[i].isFinal && t.split(' ').length > 2) {
-        last = t;
-        if (isQuestion(t)) ask(t);
-      }
+      if (e.results[i].isFinal) said += (said ? ' ' : '') + t; else interim = t;
     }
+    heard.textContent = (said + ' ' + interim).trim() || 'listening';
+    clearTimeout(timer);            // still talking, so the utterance has not ended
+    timer = setTimeout(flush, GAP);
   };
-  rec.onend = () => on && rec.start();   // chrome cuts the stream every ~60s
-  rec.onerror = e => e.error === 'not-allowed' && (heard.textContent = 'mic blocked');
+  rec.onerror = e => {
+    if (e.error !== 'not-allowed' && e.error !== 'service-not-allowed') return;
+    dead = true;                    // otherwise onend restarts it forever
+    heard.innerHTML = '<span class="err">mic blocked — allow the microphone and reload</span>';
+  };
+  rec.onend = () => dead || rec.start();   // chrome cuts the stream every ~60s
   rec.start();
+  heard.textContent = 'listening';
 };
 
-$('ask').onclick = () => last && ask(last);
+addEventListener('pointerdown', arm, { once: true });
 </script>
 </body>
 </html>

@@ -1,0 +1,143 @@
+// CDK app that hosts the interview app: one streaming Lambda behind a function URL.
+package main
+
+import (
+	"fmt"
+	"os"
+
+	"github.com/aws/aws-cdk-go/awscdk/v2"
+	"github.com/aws/aws-cdk-go/awscdk/v2/awsecrassets"
+	"github.com/aws/aws-cdk-go/awscdk/v2/awsiam"
+	"github.com/aws/aws-cdk-go/awscdk/v2/awslambda"
+	"github.com/aws/aws-cdk-go/awscdk/v2/awssecretsmanager"
+	"github.com/aws/constructs-go/constructs/v10"
+	"github.com/aws/jsii-runtime-go"
+	"github.com/cdklabs/cdk-nag-go/cdknag/v2"
+)
+
+// appImageFile is the Dockerfile for the app Lambda, built from the repo root so it can
+// COPY the page next to the handler.
+const appImageFile = "lambda/Dockerfile"
+
+// envSecretArn tells the handler where to read the provider token and the passphrase.
+const envSecretArn = "PROVIDER_SECRET_ARN"
+
+// NewInterviewStack defines the secret, the app Lambda, and its streaming function URL.
+func NewInterviewStack(scope constructs.Construct, id string, props *awscdk.StackProps) awscdk.Stack {
+	stack := awscdk.NewStack(scope, &id, props)
+
+	// Nothing populates the value: the two keys are filled in by hand after the first deploy.
+	secret := awssecretsmanager.NewSecret(stack, jsii.String("ProviderSecrets"), &awssecretsmanager.SecretProps{
+		Description:   jsii.String("CLAUDE_CODE_OAUTH_TOKEN and PASSPHRASE for the interview app."),
+		RemovalPolicy: awscdk.RemovalPolicy_DESTROY,
+	})
+
+	fn := awslambda.NewDockerImageFunction(stack, jsii.String("App"), &awslambda.DockerImageFunctionProps{
+		Code: awslambda.DockerImageCode_FromImageAsset(jsii.String(".."), &awslambda.AssetImageCodeProps{
+			File: jsii.String(appImageFile),
+			// Pinned too, so a deploy from an x86 laptop cannot build an x86 image
+			// for the arm64 function below.
+			Platform: awsecrassets.Platform_LINUX_ARM64(),
+		}),
+		// Pinned, not defaulted: the image is built by whatever machine runs cdk deploy, so
+		// the function's architecture has to match what the deploy runner produces (arm64).
+		Architecture: awslambda.Architecture_ARM_64(),
+		MemorySize:   jsii.Number(2048),
+		Timeout:      awscdk.Duration_Seconds(jsii.Number(60)),
+		Environment:  &map[string]*string{envSecretArn: secret.SecretArn()},
+	})
+	secret.GrantRead(fn, nil)
+
+	// The function URL is the public entry point; requests are gated by a passphrase checked
+	// in the handler. RESPONSE_STREAM is the point of it: the handler streams tokens back as
+	// they arrive rather than buffering the whole answer.
+	url := fn.AddFunctionUrl(&awslambda.FunctionUrlOptions{
+		AuthType:   awslambda.FunctionUrlAuthType_NONE,
+		InvokeMode: awslambda.InvokeMode_RESPONSE_STREAM,
+	})
+
+	awscdk.NewCfnOutput(stack, jsii.String("AppUrl"), &awscdk.CfnOutputProps{Value: url.Url()})
+	awscdk.NewCfnOutput(stack, jsii.String("ProviderSecretArn"), &awscdk.CfnOutputProps{Value: secret.SecretArn()})
+
+	suppressNag(stack)
+	return stack
+}
+
+// gitHubOIDCHost is the GitHub Actions OIDC issuer host.
+const gitHubOIDCHost = "token.actions.githubusercontent.com"
+
+// gitHubAudience is the audience GitHub sets when requesting AWS credentials.
+const gitHubAudience = "sts.amazonaws.com"
+
+// deploySubject pins the trust to a push on the main branch of the interview repo.
+const deploySubject = "repo:kazemisoroush/interview:ref:refs/heads/main"
+
+// deployRoleName is the IAM role GitHub Actions assumes to deploy.
+const deployRoleName = "interview-github-actions-deploy"
+
+// cdkBootstrapQualifier is the name prefix of the CDK bootstrap roles in this account.
+const cdkBootstrapQualifier = "cdk-hnb659fds"
+
+// NewInterviewCICDStack defines the deploy role, trusting the account's shared GitHub OIDC
+// provider. The provider is imported, not created: an account may hold only one provider per
+// issuer, and the other projects in this account already created it.
+func NewInterviewCICDStack(scope constructs.Construct, id string, props *awscdk.StackProps) awscdk.Stack {
+	stack := awscdk.NewStack(scope, &id, props)
+
+	providerArn := fmt.Sprintf("arn:aws:iam::%s:oidc-provider/%s", *stack.Account(), gitHubOIDCHost)
+	provider := awsiam.OpenIdConnectProvider_FromOpenIdConnectProviderArn(
+		stack, jsii.String("GitHubOIDC"), jsii.String(providerArn),
+	)
+
+	principal := awsiam.NewFederatedPrincipal(
+		provider.OpenIdConnectProviderArn(),
+		&map[string]any{
+			"StringEquals": map[string]any{
+				gitHubOIDCHost + ":aud": gitHubAudience,
+				gitHubOIDCHost + ":sub": deploySubject,
+			},
+		},
+		jsii.String("sts:AssumeRoleWithWebIdentity"),
+	)
+
+	role := awsiam.NewRole(stack, jsii.String("GithubActionsDeploy"), &awsiam.RoleProps{
+		RoleName:    jsii.String(deployRoleName),
+		AssumedBy:   principal,
+		Description: jsii.String("GitHub Actions assumes this via OIDC to deploy InterviewStack."),
+	})
+
+	bootstrapRoles := fmt.Sprintf("arn:aws:iam::%s:role/%s-*", *stack.Account(), cdkBootstrapQualifier)
+	role.AddToPolicy(awsiam.NewPolicyStatement(&awsiam.PolicyStatementProps{
+		Actions:   jsii.Strings("sts:AssumeRole"),
+		Resources: jsii.Strings(bootstrapRoles),
+	}))
+
+	cdknag.NagSuppressions_AddResourceSuppressions(role, &[]*cdknag.NagPackSuppression{
+		{
+			Id:     jsii.String("AwsSolutions-IAM5"),
+			Reason: jsii.String(fmt.Sprintf("The deploy role may only assume the CDK bootstrap roles, which share the %s-* name prefix. The wildcard is scoped to those roles in this account.", cdkBootstrapQualifier)),
+		},
+	}, jsii.Bool(true))
+
+	awscdk.NewCfnOutput(stack, jsii.String("DeployRoleArn"), &awscdk.CfnOutputProps{Value: role.RoleArn()})
+
+	return stack
+}
+
+func main() {
+	defer jsii.Close()
+
+	app := awscdk.NewApp(nil)
+	NewInterviewStack(app, "InterviewStack", &awscdk.StackProps{Env: stackEnv()})
+	NewInterviewCICDStack(app, "InterviewCICDStack", &awscdk.StackProps{Env: stackEnv()})
+	awscdk.Aspects_Of(app).Add(cdknag.NewAwsSolutionsChecks(&cdknag.NagPackProps{Verbose: jsii.Bool(true)}), nil)
+	app.Synth(nil)
+}
+
+// stackEnv reads the deployment target from the standard CDK environment variables.
+func stackEnv() *awscdk.Environment {
+	return &awscdk.Environment{
+		Account: jsii.String(os.Getenv("CDK_DEFAULT_ACCOUNT")),
+		Region:  jsii.String(os.Getenv("CDK_DEFAULT_REGION")),
+	}
+}

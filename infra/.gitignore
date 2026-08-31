@@ -1,0 +1,3 @@
+# compiled binary from `go build`
+/infra
+/cdk.out/
