@@ -57,6 +57,11 @@ const out = $('out'), heard = $('heard');
 
 // --- the one pure decision, checked under ?test ---
 
+// A stream that closed in under a second never really opened, so it counts toward
+// giving up; one that survived means the browser is healthy and the count resets.
+const GIVE_UP_AFTER = 6;
+const nextStillborn = (lasted, n) => lasted < 1000 ? n + 1 : 0;
+
 // The model replies SKIP when the utterance was not a question. While the first
 // letters are still streaming, "S" could still become either SKIP or a real answer.
 const verdict = t => {
@@ -74,6 +79,9 @@ if (location.search.includes('test')) {
   eq(verdict('skip'), 'skip', 'lowercase too');
   eq(verdict('Sydney based, 6 years'), 'show', 'a real answer starting with S');
   eq(verdict('Skipping the migration was not an option'), 'show', 'SKIP must be the whole word');
+  eq(nextStillborn(120, 0), 1, 'a stream that died instantly counts');
+  eq(nextStillborn(120, 3), 4, 'and keeps counting');
+  eq(nextStillborn(45000, 5), 0, 'a healthy session resets the count');
   eq(verdict('- I ran the migration'), 'show', 'a bullet');
   console.log('tests done');
 }
@@ -236,7 +244,9 @@ const flush = () => {
 // the button. This is the one and only tap the app ever needs.
 const arm = async () => {
   if (!SR) return heard.innerHTML = '<span class="err">no speech recognition in this browser — use Chrome or Safari</span>';
-  wake = await navigator.wakeLock?.request('screen').catch(() => null);
+  // Both '?.' matter: without the second, a browser with no wakeLock evaluates
+  // undefined.catch, and the TypeError kills arm() before the microphone ever opens.
+  wake = await navigator.wakeLock?.request('screen')?.catch(() => null);
 
   rec = new SR();
   rec.continuous = true;
@@ -252,13 +262,42 @@ const arm = async () => {
     clearTimeout(timer);            // still talking, so the utterance has not ended
     timer = setTimeout(flush, GAP);
   };
-  rec.onerror = e => {
-    if (e.error !== 'not-allowed' && e.error !== 'service-not-allowed') return;
-    dead = true;                    // otherwise onend restarts it forever
-    heard.innerHTML = '<span class="err">mic blocked — allow the microphone and reload</span>';
+  // The browser ends the stream on its own: Chrome after a stretch of silence,
+  // Safari after every utterance, and either of them instantly when the speech
+  // service errors. Restarting the moment it ends turns that into a loop that
+  // re-opens the microphone several times a second, which is what makes the
+  // recording light strobe. So restart, but back off once sessions start dying
+  // young, and give up loudly rather than hammering the microphone forever.
+  let startedAt = 0, stillborn = 0, lastError = '';
+
+  const listen = () => {
+    if (dead) return;
+    startedAt = Date.now();
+    try { rec.start(); } catch { /* already running */ }
   };
-  rec.onend = () => dead || rec.start();   // chrome cuts the stream every ~60s
-  rec.start();
+
+  const giveUp = why => {
+    dead = true;
+    heard.innerHTML = `<span class="err">${why}</span>`;
+  };
+
+  // Every error is worth showing. Swallowing them is why a strobing microphone
+  // looked like a mystery rather than whatever it actually is.
+  rec.onerror = e => {
+    lastError = e.error;
+    if (e.error === 'not-allowed' || e.error === 'service-not-allowed')
+      giveUp('mic blocked — allow the microphone and reload');
+  };
+
+  rec.onend = () => {
+    if (dead) return;
+    stillborn = nextStillborn(Date.now() - startedAt, stillborn);
+    if (stillborn > GIVE_UP_AFTER)
+      return giveUp(`the browser keeps closing the microphone: ${lastError || 'no error reported'}`);
+    setTimeout(listen, stillborn * 300);   // 0ms while healthy, backing off when not
+  };
+
+  listen();
   heard.textContent = 'listening';
 };
 
