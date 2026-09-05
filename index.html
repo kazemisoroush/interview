@@ -96,23 +96,52 @@ if (location.search.includes('test')) {
   console.assert(why('network').includes('Chrome'), 'network names the browser to switch to');
   console.assert(why('weird-new-error').includes('weird-new-error'), 'an unknown error still reports itself');
   eq(verdict('- I ran the migration'), 'show', 'a bullet');
+  const u = new URL(loginUrl({ domain: 'https://d.auth.us-east-1.amazoncognito.com', clientId: 'cid' },
+                             'https://app.lambda-url.us-east-1.on.aws/'));
+  eq(u.origin + u.pathname, 'https://d.auth.us-east-1.amazoncognito.com/login', 'the hosted page');
+  eq(u.searchParams.get('response_type'), 'token', 'implicit grant returns the token directly');
+  eq(u.searchParams.get('client_id'), 'cid', 'the pool client');
+  eq(u.searchParams.get('redirect_uri'), 'https://app.lambda-url.us-east-1.on.aws/',
+     'redirect_uri must match the registered callback exactly, encoding included');
   console.log('tests done');
 }
 
-// --- config, no button: the passphrase can ride in the link as #pass=... ---
+// --- config, no button: Cognito hands the token back on the fragment the same way the
+// GitHub Pages build takes an API key ---
 const hash = new URLSearchParams(location.hash.slice(1));
-for (const k of ['pass', 'key']) if (hash.get(k)) localStorage[k + '_'] = hash.get(k).trim();
-if (hash.get('pass') || hash.get('key')) history.replaceState(null, '', location.pathname);
+for (const k of ['id_token', 'key']) if (hash.get(k)) localStorage[k + '_'] = hash.get(k).trim();
+if (hash.get('id_token') || hash.get('key')) history.replaceState(null, '', location.pathname);
 
 const key = () => localStorage.key_ || '';
-const pass = () => localStorage.pass_ || '';
+const token = () => localStorage.id_token_ || '';
 
-// A rejected secret rejects every utterance, so stop listening rather than stack up
-// one error card per sentence the interviewer says.
+// Injected by the Lambda into the page it serves. Absent when server.mjs serves it, which is
+// what keeps the local flow sign-in free.
+const SIGN_IN = window.SIGN_IN;
+
+// redirect_uri has to match the callback registered on the pool client character for
+// character, so it is built from the page's own address rather than written out again.
+const loginUrl = (cfg, here) =>
+  `${cfg.domain}/login?client_id=${cfg.clientId}`
+  + '&response_type=token&scope=openid'
+  + `&redirect_uri=${encodeURIComponent(here)}`;
+
+const login = () => {
+  localStorage.removeItem('id_token_');
+  location.href = loginUrl(SIGN_IN, location.origin + location.pathname);
+};
+
+// Signed out is the state on a device that has never been here, so go straight to the
+// hosted page rather than waiting for the first question to be rejected and lost.
+if (SIGN_IN && !token()) login();
+
+// A rejected token rejects every utterance, so stop listening rather than stack up
+// one error card per sentence the interviewer says. Signing in again is the recovery.
 const gate = () => {
   dead = true;
   rec?.stop();
-  heard.innerHTML = '<span class="err">secret rejected — reopen this page with #pass=… on the URL</span>';
+  if (SIGN_IN) return login();
+  heard.innerHTML = '<span class="err">not signed in</span>';
 };
 
 // --- resume as the system prompt, fetched from the live resume ---
@@ -187,7 +216,8 @@ async function ask(q) {
     if (OURS) {
       res = await fetch('/ask', {
         method: 'POST', signal: ctl.signal,
-        body: JSON.stringify({ q, pass: pass() })
+        headers: { Authorization: `Bearer ${token()}` },
+        body: JSON.stringify({ q })
       });
       if (res.status === 401) return gate();
     } else {
