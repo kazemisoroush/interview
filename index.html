@@ -220,7 +220,8 @@ async function ask(q) {
       }
       const v = verdict(text);
       if (v === 'wait') continue;
-      if (v === 'skip') { ctl.abort(); return; }   // not a question, stay silent
+      // Silence alone is indistinguishable from a broken app, so say which it is.
+      if (v === 'skip') { heard.textContent = 'not a question'; ctl.abort(); return; }
       show();
       body.innerHTML = render(text);
     }
