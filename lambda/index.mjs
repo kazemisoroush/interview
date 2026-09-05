@@ -4,9 +4,9 @@
 // Runs on a Lambda Function URL in RESPONSE_STREAM invoke mode -- that mode is why
 // this is Node and not Python, which cannot stream a Lambda response at all.
 import { spawn } from 'child_process';
+import { CognitoJwtVerifier } from 'aws-jwt-verify';
 import { readFile } from 'fs/promises';
 import { mkdir } from 'fs/promises';
-import { timingSafeEqual } from 'crypto';
 import { tmpdir } from 'os';
 import { SecretsManagerClient, GetSecretValueCommand } from '@aws-sdk/client-secrets-manager';
 
@@ -34,7 +34,13 @@ function boot() {
 
     const resume = await fetch(RESUME_URL).then(r => r.text());
     return {
-      html: await readFile(new URL('./index.html', import.meta.url), 'utf8'),
+      html: (await readFile(new URL('./index.html', import.meta.url), 'utf8')).replace(
+        '</head>',
+        `<script>window.SIGN_IN=${JSON.stringify({
+          domain: process.env.COGNITO_DOMAIN,
+          clientId: process.env.COGNITO_CLIENT_ID
+        })}</script></head>`
+      ),
       system: `You are Soroush Kazemi in a live job interview. Answer in his voice, first person.
 
 You are given raw speech from the interviewer's microphone. Most of it is not a
@@ -55,9 +61,26 @@ ${resume}`
   })();
 }
 
-const equals = (a, b) => {
-  const x = Buffer.from(String(a ?? '')), y = Buffer.from(String(b ?? ''));
-  return x.length === y.length && x.length > 0 && timingSafeEqual(x, y);
+// Verifies the sign-in token's signature, issuer, audience and expiry against the pool.
+// Built once per container: it caches the pool's public keys, so only the first request of a
+// cold start pays the fetch.
+const verifier = CognitoJwtVerifier.create({
+  userPoolId: process.env.COGNITO_USER_POOL_ID,
+  clientId: process.env.COGNITO_CLIENT_ID,
+  tokenUse: 'id'
+});
+
+// Function URL headers arrive lowercased whatever the browser sent.
+const signedIn = async event => {
+  const header = event.headers?.authorization ?? '';
+  const token = header.startsWith('Bearer ') ? header.slice(7) : '';
+  if (!token) return false;
+  try {
+    await verifier.verify(token);
+    return true;
+  } catch {
+    return false;   // expired, forged, or minted for another pool: all the same answer
+  }
 };
 
 // Spawn the CLI and write only its text deltas to the response stream.
@@ -119,9 +142,9 @@ export const handler = awslambda.streamifyResponse(async (event, responseStream)
     body = JSON.parse(raw ?? '{}');
   } catch { /* falls through to the 400 below */ }
 
-  if (!equals(body.pass, process.env.PASSPHRASE)) {
+  if (!await signedIn(event)) {
     const out = reply(401, 'text/plain; charset=utf-8');
-    out.write('wrong passphrase');
+    out.write('not signed in');
     return out.end();
   }
   if (!body.q) {

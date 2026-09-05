@@ -6,6 +6,7 @@ import (
 	"os"
 
 	"github.com/aws/aws-cdk-go/awscdk/v2"
+	"github.com/aws/aws-cdk-go/awscdk/v2/awscognito"
 	"github.com/aws/aws-cdk-go/awscdk/v2/awsecrassets"
 	"github.com/aws/aws-cdk-go/awscdk/v2/awsiam"
 	"github.com/aws/aws-cdk-go/awscdk/v2/awslambda"
@@ -19,16 +20,30 @@ import (
 // COPY the page next to the handler.
 const appImageFile = "lambda/Dockerfile"
 
-// envSecretArn tells the handler where to read the provider token and the passphrase.
+// envSecretArn tells the handler where to read the provider token.
 const envSecretArn = "PROVIDER_SECRET_ARN"
+
+// The handler verifies the sign-in token against these, and the page reads them back to
+// know where to send someone who is not signed in yet.
+const (
+	envUserPoolID  = "COGNITO_USER_POOL_ID"
+	envClientID    = "COGNITO_CLIENT_ID"
+	envLoginDomain = "COGNITO_DOMAIN"
+)
+
+// signInValidityDays is how long a sign-in lasts. A day means one sign-in on the morning of
+// an interview rather than one mid-answer, and a day is Cognito's ceiling for these tokens.
+// ponytail: implicit grant has no refresh token, so this is the whole session length.
+// Move to the authorization code flow with PKCE if a day ever proves too short.
+const signInValidityDays = 1
 
 // NewInterviewStack defines the secret, the app Lambda, and its streaming function URL.
 func NewInterviewStack(scope constructs.Construct, id string, props *awscdk.StackProps) awscdk.Stack {
 	stack := awscdk.NewStack(scope, &id, props)
 
-	// Nothing populates the value: the two keys are filled in by hand after the first deploy.
+	// Nothing populates the value: the token is filled in by hand after the first deploy.
 	secret := awssecretsmanager.NewSecret(stack, jsii.String("ProviderSecrets"), &awssecretsmanager.SecretProps{
-		Description:   jsii.String("CLAUDE_CODE_OAUTH_TOKEN and PASSPHRASE for the interview app."),
+		Description:   jsii.String("CLAUDE_CODE_OAUTH_TOKEN for the interview app."),
 		RemovalPolicy: awscdk.RemovalPolicy_DESTROY,
 	})
 
@@ -48,19 +63,70 @@ func NewInterviewStack(scope constructs.Construct, id string, props *awscdk.Stac
 	})
 	secret.GrantRead(fn, nil)
 
-	// The function URL is the public entry point; requests are gated by a passphrase checked
-	// in the handler. RESPONSE_STREAM is the point of it: the handler streams tokens back as
-	// they arrive rather than buffering the whole answer.
+	// The function URL is the public entry point; the handler verifies a Cognito token on
+	// every answer. RESPONSE_STREAM is the point of it: the handler streams tokens back as
+	// they arrive rather than buffering the whole answer. This is also why the authorizer
+	// cannot sit on an API Gateway the way the book project does: API Gateway buffers, and
+	// a buffered answer arrives after the interviewer has moved on.
 	url := fn.AddFunctionUrl(&awslambda.FunctionUrlOptions{
 		AuthType:   awslambda.FunctionUrlAuthType_NONE,
 		InvokeMode: awslambda.InvokeMode_RESPONSE_STREAM,
 	})
 
+	pool, client, domain := signIn(stack, url.Url())
+	fn.AddEnvironment(jsii.String(envUserPoolID), pool.UserPoolId(), nil)
+	fn.AddEnvironment(jsii.String(envClientID), client.UserPoolClientId(), nil)
+	fn.AddEnvironment(jsii.String(envLoginDomain), domain.BaseUrl(nil), nil)
+
 	awscdk.NewCfnOutput(stack, jsii.String("AppUrl"), &awscdk.CfnOutputProps{Value: url.Url()})
+	awscdk.NewCfnOutput(stack, jsii.String("UserPoolId"), &awscdk.CfnOutputProps{Value: pool.UserPoolId()})
 	awscdk.NewCfnOutput(stack, jsii.String("ProviderSecretArn"), &awscdk.CfnOutputProps{Value: secret.SecretArn()})
 
 	suppressNag(stack)
 	return stack
+}
+
+// signIn stands up the user pool the handler verifies against and the hosted page people
+// actually sign in on. There is no self-signup: the one account is created by hand, which is
+// what keeps a public function URL from spending a personal subscription.
+func signIn(stack awscdk.Stack, appURL *string) (awscognito.UserPool, awscognito.IUserPoolClient, awscognito.UserPoolDomain) {
+	pool := awscognito.NewUserPool(stack, jsii.String("Users"), &awscognito.UserPoolProps{
+		SelfSignUpEnabled: jsii.Bool(false),
+		SignInAliases:     &awscognito.SignInAliases{Email: jsii.Bool(true)},
+		PasswordPolicy: &awscognito.PasswordPolicy{
+			MinLength:        jsii.Number(12),
+			RequireLowercase: jsii.Bool(true),
+			RequireUppercase: jsii.Bool(true),
+			RequireDigits:    jsii.Bool(true),
+			RequireSymbols:   jsii.Bool(true),
+		},
+		AccountRecovery: awscognito.AccountRecovery_EMAIL_ONLY,
+		RemovalPolicy:   awscdk.RemovalPolicy_DESTROY,
+	})
+
+	// Implicit grant: the hosted page hands the token straight back on the fragment, which the
+	// page already knows how to read. The authorization code flow would need a token exchange
+	// and a client secret store for one user, which is more moving parts than a day-long
+	// session is worth.
+	client := pool.AddClient(jsii.String("AppClient"), &awscognito.UserPoolClientOptions{
+		GenerateSecret: jsii.Bool(false),
+		OAuth: &awscognito.OAuthSettings{
+			Flows:        &awscognito.OAuthFlows{ImplicitCodeGrant: jsii.Bool(true)},
+			Scopes:       &[]awscognito.OAuthScope{awscognito.OAuthScope_OPENID()},
+			CallbackUrls: &[]*string{appURL},
+		},
+		AccessTokenValidity: awscdk.Duration_Days(jsii.Number(signInValidityDays)),
+		IdTokenValidity:     awscdk.Duration_Days(jsii.Number(signInValidityDays)),
+	})
+
+	// The prefix is global across every AWS account, so it carries this account's id.
+	domain := pool.AddDomain(jsii.String("LoginDomain"), &awscognito.UserPoolDomainOptions{
+		CognitoDomain: &awscognito.CognitoDomainOptions{
+			DomainPrefix: jsii.String(fmt.Sprintf("interview-%s", *stack.Account())),
+		},
+	})
+
+	return pool, client, domain
 }
 
 // gitHubOIDCHost is the GitHub Actions OIDC issuer host.
