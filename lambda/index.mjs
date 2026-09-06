@@ -36,10 +36,13 @@ function boot() {
     return {
       html: (await readFile(new URL('./index.html', import.meta.url), 'utf8')).replace(
         '</head>',
-        `<script>window.SIGN_IN=${JSON.stringify({
-          domain: process.env.COGNITO_DOMAIN,
-          clientId: process.env.COGNITO_CLIENT_ID
-        })}</script></head>`
+        // null, not a half-filled object: {} is truthy, and the page reads any truthy
+        // value as "there is a sign-in to send people to".
+        `<script>window.SIGN_IN=${JSON.stringify(
+          process.env.COGNITO_DOMAIN && process.env.COGNITO_CLIENT_ID
+            ? { domain: process.env.COGNITO_DOMAIN, clientId: process.env.COGNITO_CLIENT_ID }
+            : null
+        )}</script></head>`
       ),
       system: `You are Soroush Kazemi in a live job interview. Answer in his voice, first person.
 
