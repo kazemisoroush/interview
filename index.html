@@ -131,9 +131,17 @@ const login = () => {
   location.href = loginUrl(SIGN_IN, location.origin + location.pathname);
 };
 
+// Cognito reports a refused sign-in on the fragment as well, and bouncing someone
+// straight back to the hosted page reads as a loop rather than as a refusal.
+const signInError = hash.get('error_description') || hash.get('error');
+
 // Signed out is the state on a device that has never been here, so go straight to the
 // hosted page rather than waiting for the first question to be rejected and lost.
-if (SIGN_IN && !token()) login();
+if (SIGN_IN && signInError) {
+  heard.innerHTML = '<span class="err"></span>';
+  // textContent, not innerHTML: this text arrives on the fragment, so anyone can author it.
+  heard.firstChild.textContent = signInError;
+} else if (SIGN_IN && !token()) login();
 
 // A rejected token rejects every utterance, so stop listening rather than stack up
 // one error card per sentence the interviewer says. Signing in again is the recovery.
