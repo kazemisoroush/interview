@@ -117,7 +117,9 @@ if (location.search.includes('test')) {
 // GitHub Pages build takes an API key ---
 const hash = new URLSearchParams(location.hash.slice(1));
 for (const k of ['id_token', 'key']) if (hash.get(k)) localStorage[k + '_'] = hash.get(k).trim();
-if (hash.get('id_token') || hash.get('key')) history.replaceState(null, '', location.pathname);
+// Everything the fragment carried has been read by now, including a refusal, so clear it:
+// a stale error left in the address bar outlives the problem it describes.
+if (location.hash) history.replaceState(null, '', location.pathname);
 
 const key = () => localStorage.key_ || '';
 const token = () => localStorage.id_token_ || '';

@@ -6,8 +6,9 @@
 #
 # The token never reaches the shell history, the script's output, or any file. The
 # forced cold start at the end is not optional: the handler caches the secret in
-# `booted`, so a warm container keeps serving the old value and every request keeps
-# coming back 401 long after the secret is correct.
+# `booted`, so a warm container keeps spending the old token and every answer keeps
+# failing inside the CLI long after the secret is correct. It does not show up as a 401:
+# that status is the sign-in check alone, and this secret no longer feeds it.
 set -euo pipefail
 
 REGION=us-east-1
