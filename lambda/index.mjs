@@ -73,10 +73,14 @@ const verifier = CognitoJwtVerifier.create({
   tokenUse: 'id'
 });
 
+// The scheme the page sends the sign-in token under, named so the length below says
+// what it is measuring.
+const BEARER = 'Bearer ';
+
 // Function URL headers arrive lowercased whatever the browser sent.
 const signedIn = async event => {
   const header = event.headers?.authorization ?? '';
-  const token = header.startsWith('Bearer ') ? header.slice(7) : '';
+  const token = header.startsWith(BEARER) ? header.slice(BEARER.length) : '';
   if (!token) return false;
   try {
     await verifier.verify(token);
