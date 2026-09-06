@@ -139,17 +139,20 @@ export const handler = awslambda.streamifyResponse(async (event, responseStream)
     return out.end();
   }
 
+  // Before the body is even parsed: signedIn reads the header alone, so there is no
+  // reason to unpack a payload from a caller who is about to be turned away.
+  if (!await signedIn(event)) {
+    const out = reply(401, 'text/plain; charset=utf-8');
+    out.write('not signed in');
+    return out.end();
+  }
+
   let body = {};
   try {
     const raw = event.isBase64Encoded ? Buffer.from(event.body, 'base64').toString() : event.body;
     body = JSON.parse(raw ?? '{}');
   } catch { /* falls through to the 400 below */ }
 
-  if (!await signedIn(event)) {
-    const out = reply(401, 'text/plain; charset=utf-8');
-    out.write('not signed in');
-    return out.end();
-  }
   if (!body.q) {
     const out = reply(400, 'text/plain; charset=utf-8');
     out.write('no question');
