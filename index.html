@@ -149,7 +149,9 @@ const gate = () => {
   dead = true;
   rec?.stop();
   if (SIGN_IN) return login();
-  heard.innerHTML = '<span class="err">not signed in</span>';
+  // Only the GitHub Pages build reaches here: it talks to the API directly on a key, and
+  // has no sign-in to send anyone to. The local server rejects nothing at all.
+  heard.innerHTML = '<span class="err">key rejected — reopen this page with #key=… on the URL</span>';
 };
 
 // --- resume as the system prompt, fetched from the live resume ---
