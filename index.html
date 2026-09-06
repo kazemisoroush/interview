@@ -73,8 +73,6 @@ const why = error => ({
   'audio-capture': 'no microphone found — check the input device and reload',
 }[error] ?? `the browser keeps closing the microphone: ${error || 'no error reported'}`);
 
-// The model replies SKIP when the utterance was not a question. While the first
-// letters are still streaming, "S" could still become either SKIP or a real answer.
 // redirect_uri has to match the callback registered on the pool client character for
 // character, so it is built from the page's own address rather than written out again.
 const loginUrl = (cfg, here) =>
@@ -82,6 +80,8 @@ const loginUrl = (cfg, here) =>
   + '&response_type=token&scope=openid'
   + `&redirect_uri=${encodeURIComponent(here)}`;
 
+// The model replies SKIP when the utterance was not a question. While the first
+// letters are still streaming, "S" could still become either SKIP or a real answer.
 const verdict = t => {
   const s = t.trim().toLowerCase();
   if (s.length < 4) return 'skip'.startsWith(s) ? 'wait' : 'show';
