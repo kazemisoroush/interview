@@ -43,7 +43,7 @@
 const RESUME_URL = 'https://kazemisoroush.github.io/resume/resume.txt';
 const MODEL = 'claude-opus-5';
 // served by our own backend (server.mjs or the Lambda) => answers come from
-// `claude -p` on the subscription, gated by a passphrase instead of an API key
+// `claude -p` on the subscription, gated by a Cognito sign-in token instead of an API key
 const OURS = location.hostname !== 'kazemisoroush.github.io';
 
 // Silence that means "they stopped talking", not merely "they drew breath". This has
@@ -75,6 +75,13 @@ const why = error => ({
 
 // The model replies SKIP when the utterance was not a question. While the first
 // letters are still streaming, "S" could still become either SKIP or a real answer.
+// redirect_uri has to match the callback registered on the pool client character for
+// character, so it is built from the page's own address rather than written out again.
+const loginUrl = (cfg, here) =>
+  `${cfg.domain}/login?client_id=${cfg.clientId}`
+  + '&response_type=token&scope=openid'
+  + `&redirect_uri=${encodeURIComponent(here)}`;
+
 const verdict = t => {
   const s = t.trim().toLowerCase();
   if (s.length < 4) return 'skip'.startsWith(s) ? 'wait' : 'show';
@@ -118,13 +125,6 @@ const token = () => localStorage.id_token_ || '';
 // Injected by the Lambda into the page it serves. Absent when server.mjs serves it, which is
 // what keeps the local flow sign-in free.
 const SIGN_IN = window.SIGN_IN;
-
-// redirect_uri has to match the callback registered on the pool client character for
-// character, so it is built from the page's own address rather than written out again.
-const loginUrl = (cfg, here) =>
-  `${cfg.domain}/login?client_id=${cfg.clientId}`
-  + '&response_type=token&scope=openid'
-  + `&redirect_uri=${encodeURIComponent(here)}`;
 
 const login = () => {
   localStorage.removeItem('id_token_');
