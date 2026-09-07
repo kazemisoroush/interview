@@ -19,12 +19,16 @@ const HOME = '/tmp/home';   // the only writable path on Lambda; the CLI wants a
 // that already depends on the function's own URL.
 const APP_CLIENT_NAME = 'interview-app';
 
+// Cognito's largest page. The pool holds the one app client, so it is always on the first
+// page and there is nothing to page through.
+const CLIENTS_PER_PAGE = 60;
+
 // Returns the pool client's id, or null when there is no pool, which is how the local
 // server runs with no sign-in at all.
 const findClientId = async userPoolId => {
   if (!userPoolId) return null;
   const res = await new CognitoIdentityProviderClient({}).send(
-    new ListUserPoolClientsCommand({ UserPoolId: userPoolId, MaxResults: 60 })
+    new ListUserPoolClientsCommand({ UserPoolId: userPoolId, MaxResults: CLIENTS_PER_PAGE })
   );
   return res.UserPoolClients?.find(c => c.ClientName === APP_CLIENT_NAME)?.ClientId ?? null;
 };
