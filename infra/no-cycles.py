@@ -34,7 +34,7 @@ def referenced(node, found):
 def cycles(resources):
     edges = {name: {d for d in referenced(body, set()) if d in resources}
              for name, body in resources.items()}
-    WHITE, GREY = 0, 1
+    WHITE, GREY, BLACK = 0, 1, 2
     state = collections.defaultdict(int)
     found = []
 
@@ -47,7 +47,7 @@ def cycles(resources):
             elif state[other] == WHITE:
                 walk(other, path)
         path.pop()
-        state[name] = 2
+        state[name] = BLACK
 
     for name in sorted(edges):
         if state[name] == WHITE:
