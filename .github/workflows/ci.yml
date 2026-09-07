@@ -31,6 +31,11 @@ jobs:
           CDK_DEFAULT_ACCOUNT: "000000000000"
           CDK_DEFAULT_REGION: us-east-1
           JSII_SILENCE_WARNING_UNTESTED_NODE_VERSION: "1"
+      # synth accepts a template CloudFormation will reject, so the cycle check runs on
+      # what synth produced rather than trusting that it succeeded.
+      - name: No circular dependencies
+        working-directory: infra
+        run: python3 no-cycles.py cdk.out/InterviewStack.template.json
 
   deploy:
     needs: [infra]

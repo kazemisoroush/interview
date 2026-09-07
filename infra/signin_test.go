@@ -59,5 +59,8 @@ func TestSignInReturnsTheTokenToTheAppOnly(t *testing.T) {
 		"AllowedOAuthScopes":         []any{"openid"},
 		"GenerateSecret":             false,
 		"SupportedIdentityProviders": []any{"COGNITO"},
+		// The handler finds the client by this name, since its id cannot be passed in
+		// without making the function depend on the client that depends on the function.
+		"ClientName": appClientName,
 	})
 }
