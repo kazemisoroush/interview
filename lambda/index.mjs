@@ -9,9 +9,29 @@ import { readFile } from 'fs/promises';
 import { mkdir } from 'fs/promises';
 import { tmpdir } from 'os';
 import { SecretsManagerClient, GetSecretValueCommand } from '@aws-sdk/client-secrets-manager';
+import { CognitoIdentityProviderClient, ListUserPoolClientsCommand } from '@aws-sdk/client-cognito-identity-provider';
 
 const RESUME_URL = 'https://kazemisoroush.github.io/resume/resume.txt';
 const HOME = '/tmp/home';   // the only writable path on Lambda; the CLI wants a config dir
+
+// The name the stack gives the pool client. Looked up rather than passed in, because a
+// client id in this function's environment would make the function depend on the client
+// that already depends on the function's own URL.
+const APP_CLIENT_NAME = 'interview-app';
+
+// Cognito's largest page. The pool holds the one app client, so it is always on the first
+// page and there is nothing to page through.
+const CLIENTS_PER_PAGE = 60;
+
+// Returns the pool client's id, or null when there is no pool, which is how the local
+// server runs with no sign-in at all.
+const findClientId = async userPoolId => {
+  if (!userPoolId) return null;
+  const res = await new CognitoIdentityProviderClient({}).send(
+    new ListUserPoolClientsCommand({ UserPoolId: userPoolId, MaxResults: CLIENTS_PER_PAGE })
+  );
+  return res.UserPoolClients?.find(c => c.ClientName === APP_CLIENT_NAME)?.ClientId ?? null;
+};
 
 let booted;
 
@@ -32,15 +52,26 @@ function boot() {
       }
     }
 
+    const userPoolId = process.env.COGNITO_USER_POOL_ID;
+    const clientId = await findClientId(userPoolId);
+
+    // Verifies the sign-in token's signature, issuer, audience and expiry against the pool.
+    // Built once per container: it caches the pool's public keys, so only the first request
+    // of a cold start pays the fetch.
+    const verifier = clientId
+      ? CognitoJwtVerifier.create({ userPoolId, clientId, tokenUse: 'id' })
+      : null;
+
     const resume = await fetch(RESUME_URL).then(r => r.text());
     return {
+      verifier,
       html: (await readFile(new URL('./index.html', import.meta.url), 'utf8')).replace(
         '</head>',
         // null, not a half-filled object: {} is truthy, and the page reads any truthy
         // value as "there is a sign-in to send people to".
         `<script>window.SIGN_IN=${JSON.stringify(
-          process.env.COGNITO_DOMAIN && process.env.COGNITO_CLIENT_ID
-            ? { domain: process.env.COGNITO_DOMAIN, clientId: process.env.COGNITO_CLIENT_ID }
+          process.env.COGNITO_DOMAIN && clientId
+            ? { domain: process.env.COGNITO_DOMAIN, clientId }
             : null
         )}</script></head>`
       ),
@@ -64,24 +95,15 @@ ${resume}`
   })();
 }
 
-// Verifies the sign-in token's signature, issuer, audience and expiry against the pool.
-// Built once per container: it caches the pool's public keys, so only the first request of a
-// cold start pays the fetch.
-const verifier = CognitoJwtVerifier.create({
-  userPoolId: process.env.COGNITO_USER_POOL_ID,
-  clientId: process.env.COGNITO_CLIENT_ID,
-  tokenUse: 'id'
-});
-
 // The scheme the page sends the sign-in token under, named so the length below says
 // what it is measuring.
 const BEARER = 'Bearer ';
 
 // Function URL headers arrive lowercased whatever the browser sent.
-const signedIn = async event => {
+const signedIn = async (event, verifier) => {
   const header = event.headers?.authorization ?? '';
   const token = header.startsWith(BEARER) ? header.slice(BEARER.length) : '';
-  if (!token) return false;
+  if (!token || !verifier) return false;   // no pool means no signed-in state to prove
   try {
     await verifier.verify(token);
     return true;
@@ -129,7 +151,7 @@ function answer(question, system, out) {
 }
 
 export const handler = awslambda.streamifyResponse(async (event, responseStream) => {
-  const { html, system } = await boot();
+  const { html, system, verifier } = await boot();
   const method = event.requestContext?.http?.method ?? 'GET';
 
   const reply = (statusCode, contentType) => awslambda.HttpResponseStream.from(responseStream, {
@@ -145,7 +167,7 @@ export const handler = awslambda.streamifyResponse(async (event, responseStream)
 
   // Before the body is even parsed: signedIn reads the header alone, so there is no
   // reason to unpack a payload from a caller who is about to be turned away.
-  if (!await signedIn(event)) {
+  if (!await signedIn(event, verifier)) {
     const out = reply(401, 'text/plain; charset=utf-8');
     out.write('not signed in');
     return out.end();

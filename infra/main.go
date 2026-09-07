@@ -27,9 +27,14 @@ const envSecretArn = "PROVIDER_SECRET_ARN"
 // know where to send someone who is not signed in yet.
 const (
 	envUserPoolID  = "COGNITO_USER_POOL_ID"
-	envClientID    = "COGNITO_CLIENT_ID"
 	envLoginDomain = "COGNITO_DOMAIN"
 )
+
+// appClientName is how the handler finds the client at runtime. The id cannot be handed
+// over as an environment variable: the client carries the function URL as its callback, so
+// the function would depend on the client that depends on the function, and CloudFormation
+// rejects the template before it changes anything.
+const appClientName = "interview-app"
 
 // signInValidityDays is how long a sign-in lasts. A day means one sign-in on the morning of
 // an interview rather than one mid-answer, and a day is Cognito's ceiling for these tokens.
@@ -73,10 +78,15 @@ func NewInterviewStack(scope constructs.Construct, id string, props *awscdk.Stac
 		InvokeMode: awslambda.InvokeMode_RESPONSE_STREAM,
 	})
 
-	pool, client, domain := signIn(stack, url.Url())
+	pool, domain := signIn(stack, url.Url())
+	// Both of these are safe to pass: the pool and its domain hold no reference back to the
+	// function, so neither closes a loop the way the client id would.
 	fn.AddEnvironment(jsii.String(envUserPoolID), pool.UserPoolId(), nil)
-	fn.AddEnvironment(jsii.String(envClientID), client.UserPoolClientId(), nil)
 	fn.AddEnvironment(jsii.String(envLoginDomain), domain.BaseUrl(nil), nil)
+	fn.AddToRolePolicy(awsiam.NewPolicyStatement(&awsiam.PolicyStatementProps{
+		Actions:   jsii.Strings("cognito-idp:ListUserPoolClients"),
+		Resources: &[]*string{pool.UserPoolArn()},
+	}))
 
 	awscdk.NewCfnOutput(stack, jsii.String("AppUrl"), &awscdk.CfnOutputProps{Value: url.Url()})
 	awscdk.NewCfnOutput(stack, jsii.String("UserPoolId"), &awscdk.CfnOutputProps{Value: pool.UserPoolId()})
@@ -89,7 +99,7 @@ func NewInterviewStack(scope constructs.Construct, id string, props *awscdk.Stac
 // signIn stands up the user pool the handler verifies against and the hosted page people
 // actually sign in on. There is no self-signup: the one account is created by hand, which is
 // what keeps a public function URL from spending a personal subscription.
-func signIn(stack awscdk.Stack, appURL *string) (awscognito.UserPool, awscognito.IUserPoolClient, awscognito.UserPoolDomain) {
+func signIn(stack awscdk.Stack, appURL *string) (awscognito.UserPool, awscognito.UserPoolDomain) {
 	pool := awscognito.NewUserPool(stack, jsii.String("Users"), &awscognito.UserPoolProps{
 		SelfSignUpEnabled: jsii.Bool(false),
 		SignInAliases:     &awscognito.SignInAliases{Email: jsii.Bool(true)},
@@ -108,8 +118,9 @@ func signIn(stack awscdk.Stack, appURL *string) (awscognito.UserPool, awscognito
 	// page already knows how to read. The authorization code flow would need a token exchange
 	// and a client secret store for one user, which is more moving parts than a day-long
 	// session is worth.
-	client := pool.AddClient(jsii.String("AppClient"), &awscognito.UserPoolClientOptions{
-		GenerateSecret: jsii.Bool(false),
+	pool.AddClient(jsii.String("AppClient"), &awscognito.UserPoolClientOptions{
+		UserPoolClientName: jsii.String(appClientName),
+		GenerateSecret:     jsii.Bool(false),
 		OAuth: &awscognito.OAuthSettings{
 			Flows:        &awscognito.OAuthFlows{ImplicitCodeGrant: jsii.Bool(true)},
 			Scopes:       &[]awscognito.OAuthScope{awscognito.OAuthScope_OPENID()},
@@ -126,7 +137,7 @@ func signIn(stack awscdk.Stack, appURL *string) (awscognito.UserPool, awscognito
 		},
 	})
 
-	return pool, client, domain
+	return pool, domain
 }
 
 // gitHubOIDCHost is the GitHub Actions OIDC issuer host.
