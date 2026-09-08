@@ -20,7 +20,8 @@ const HOME = '/tmp/home';   // the only writable path on Lambda; the CLI wants a
 const APP_CLIENT_NAME = 'interview-app';
 
 // CloudWatch records only the total, and the one metric here is seconds to the first
-// bullet, so each span that could hold them says how long it took.
+// bullet, so each span that could hold them says how long it took. Marks sharing a start
+// are cumulative, so a single span is the difference between two adjacent marks.
 const since = start => `${Date.now() - start}ms`;
 
 // Cognito's largest page. The pool holds the one app client, so it is always on the first
