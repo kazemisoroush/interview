@@ -81,15 +81,17 @@
     color: var(--muted); letter-spacing: .01em;
   }
 
-  /* render() emits one <ul> per bullet, so the spacing lives on the item. */
-  .card ul { margin: 0; padding-left: 18px; list-style: none; }
-  .card li, .card p { margin: 0 0 10px; font-size: 19px; line-height: 1.5; }
-  .card li { position: relative; }
+  /* render() emits one <ul> per bullet, so the <ul> is what repeats and the gap has to
+     live there. On the <li> it would never show: every item is its list's last child. */
+  .card ul { margin: 0 0 10px; padding-left: 18px; list-style: none; }
+  .card li, .card p { font-size: 19px; line-height: 1.5; }
+  .card li { margin: 0; position: relative; }
+  .card p { margin: 0 0 10px; }
   .card li::before {
     content: ""; position: absolute; left: -16px; top: .62em;
     width: 6px; height: 6px; border-radius: 50%; background: var(--accent);
   }
-  .card li:last-child, .card p:last-child { margin-bottom: 0; }
+  .card ul:last-child, .card p:last-child { margin-bottom: 0; }
   .card b { color: var(--strong); font-weight: 600; }
 
   .err { color: var(--danger); font-size: 15px; }
