@@ -14,7 +14,10 @@
     --text:    #e8eef7;
     --muted:   #8b97a8;
     --accent:  #4c8dff;
+    --accent-2:#7aa7ff;
     --danger:  #ff7b72;
+    --wash:    #17202e;
+    --strong:  #ffffff;
     --radius:  14px;
   }
   * { box-sizing: border-box; }
@@ -23,7 +26,7 @@
     margin: 0; color: var(--text);
     background: var(--bg);
     /* A single soft wash behind the header, so the page has a top without a border. */
-    background-image: radial-gradient(120% 60% at 50% 0%, #17202e 0%, var(--bg) 60%);
+    background-image: radial-gradient(120% 60% at 50% 0%, var(--wash) 0%, var(--bg) 60%);
     background-attachment: fixed;
     font: 17px/1.55 -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif;
     padding: env(safe-area-inset-top) 16px calc(28px + env(safe-area-inset-bottom));
@@ -53,7 +56,7 @@
   /* the only feedback between the question ending and the first token landing */
   #prog {
     height: 3px; border-radius: 3px; width: 0; opacity: 0;
-    background: linear-gradient(90deg, var(--accent), #7aa7ff);
+    background: linear-gradient(90deg, var(--accent), var(--accent-2));
     transition: width .3s linear, opacity .3s;
   }
   body.busy #prog {
@@ -87,7 +90,7 @@
     width: 6px; height: 6px; border-radius: 50%; background: var(--accent);
   }
   .card li:last-child, .card p:last-child { margin-bottom: 0; }
-  .card b { color: #fff; font-weight: 600; }
+  .card b { color: var(--strong); font-weight: 600; }
 
   .err { color: var(--danger); font-size: 15px; }
 
