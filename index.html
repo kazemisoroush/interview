@@ -6,29 +6,100 @@
 <meta name="theme-color" content="#0d1117">
 <title>Interview</title>
 <style>
-  :root { color-scheme: dark; }
-  * { box-sizing: border-box; }
-  body {
-    margin: 0; background: #0d1117; color: #e6edf3;
-    font: 17px/1.55 -apple-system, system-ui, sans-serif;
-    padding: env(safe-area-inset-top) 14px calc(24px + env(safe-area-inset-bottom));
-    -webkit-tap-highlight-color: transparent;
+  :root {
+    color-scheme: dark;
+    --bg:      #0b0e14;
+    --surface: #141922;
+    --line:    #232b39;
+    --text:    #e8eef7;
+    --muted:   #8b97a8;
+    --accent:  #4c8dff;
+    --accent-2:#7aa7ff;
+    --danger:  #ff7b72;
+    --wash:    #17202e;
+    --strong:  #ffffff;
+    --radius:  14px;
   }
-  header { position: sticky; top: 0; background: #0d1117; padding: 12px 0 0; z-index: 2; }
-  #heard { color: #7d8590; font-size: 14px; min-height: 20px; margin: 0 0 8px;
-           overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  * { box-sizing: border-box; }
+
+  body {
+    margin: 0; color: var(--text);
+    background: var(--bg);
+    /* A single soft wash behind the header, so the page has a top without a border. */
+    background-image: radial-gradient(120% 60% at 50% 0%, var(--wash) 0%, var(--bg) 60%);
+    background-attachment: fixed;
+    font: 17px/1.55 -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif;
+    padding: env(safe-area-inset-top) 16px calc(28px + env(safe-area-inset-bottom));
+    -webkit-tap-highlight-color: transparent;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  header {
+    position: sticky; top: 0; z-index: 2;
+    padding: 14px 0 0;
+    background: linear-gradient(var(--bg) 70%, transparent);
+    backdrop-filter: blur(8px);
+  }
+
+  /* The transcript grows while someone talks. It wraps and keeps the newest words in
+     view rather than clipping the line, because the tail is the part being spoken. */
+  #heard {
+    margin: 0 0 10px;
+    color: var(--muted); font-size: 14px; letter-spacing: .01em;
+    min-height: 20px; max-height: 3.2em;
+    overflow-y: auto; overscroll-behavior: contain;
+    white-space: pre-wrap; word-break: break-word;
+    scrollbar-width: none;
+  }
+  #heard::-webkit-scrollbar { display: none; }
+
   /* the only feedback between the question ending and the first token landing */
-  #prog { height: 2px; border-radius: 2px; background: #1f6feb; width: 0; opacity: 0;
-          transition: width .3s linear, opacity .3s; }
-  body.busy #prog { width: 92%; opacity: 1;
-                    transition: width 6s cubic-bezier(0,.7,.2,1), opacity .15s; }
-  .card { background: #161b22; border: 1px solid #30363d; border-radius: 12px;
-          padding: 14px 16px; margin: 12px 0 0; }
-  .card h2 { font-size: 15px; color: #7d8590; font-weight: 600; margin: 0 0 8px; }
-  .card ul { margin: 0; padding-left: 20px; }
-  .card li { margin: 0 0 8px; font-size: 19px; }
-  .card p { margin: 0 0 8px; font-size: 19px; }
-  .err { color: #ff7b72; font-size: 15px; }
+  #prog {
+    height: 3px; border-radius: 3px; width: 0; opacity: 0;
+    background: linear-gradient(90deg, var(--accent), var(--accent-2));
+    transition: width .3s linear, opacity .3s;
+  }
+  body.busy #prog {
+    width: 92%; opacity: 1;
+    transition: width 6s cubic-bezier(0,.7,.2,1), opacity .15s;
+  }
+
+  .card {
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    padding: 16px 18px; margin: 14px 0 0;
+    box-shadow: 0 1px 2px rgb(0 0 0 / .4), 0 8px 24px rgb(0 0 0 / .22);
+    animation: rise .22s ease-out both;
+  }
+  @keyframes rise { from { opacity: 0; transform: translateY(6px); } }
+
+  .card h2 {
+    margin: 0 0 12px; padding-bottom: 10px;
+    border-bottom: 1px solid var(--line);
+    font-size: 14px; font-weight: 600; line-height: 1.4;
+    color: var(--muted); letter-spacing: .01em;
+  }
+
+  /* render() emits one <ul> per bullet, so the <ul> is what repeats and the gap has to
+     live there. On the <li> it would never show: every item is its list's last child. */
+  .card ul { margin: 0 0 10px; padding-left: 18px; list-style: none; }
+  .card li, .card p { font-size: 19px; line-height: 1.5; }
+  .card li { margin: 0; position: relative; }
+  .card p { margin: 0 0 10px; }
+  .card li::before {
+    content: ""; position: absolute; left: -16px; top: .62em;
+    width: 6px; height: 6px; border-radius: 50%; background: var(--accent);
+  }
+  .card ul:last-child, .card p:last-child { margin-bottom: 0; }
+  .card b { color: var(--strong); font-weight: 600; }
+
+  .err { color: var(--danger); font-size: 15px; }
+
+  @media (prefers-reduced-motion: reduce) {
+    .card { animation: none; }
+    #prog, body.busy #prog { transition: opacity .15s; }
+  }
 </style>
 </head>
 <body>
@@ -315,6 +386,7 @@ const arm = async () => {
       if (e.results[i].isFinal) said += (said ? ' ' : '') + t; else interim = t;
     }
     heard.textContent = (said + ' ' + interim).trim() || 'listening';
+    heard.scrollTop = heard.scrollHeight;   // the newest words, not the first ones
     clearTimeout(timer);            // still talking, so the utterance has not ended
     timer = setTimeout(flush, GAP);
   };
