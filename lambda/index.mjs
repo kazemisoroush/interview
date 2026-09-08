@@ -19,6 +19,11 @@ const HOME = '/tmp/home';   // the only writable path on Lambda; the CLI wants a
 // that already depends on the function's own URL.
 const APP_CLIENT_NAME = 'interview-app';
 
+// CloudWatch records only the total, and the one metric here is seconds to the first
+// bullet, so each span that could hold them says how long it took. Marks sharing a start
+// are cumulative, so a single span is the difference between two adjacent marks.
+const since = start => `${Date.now() - start}ms`;
+
 // Cognito's largest page. The pool holds the one app client, so it is always on the first
 // page and there is nothing to page through.
 const CLIENTS_PER_PAGE = 60;
@@ -38,6 +43,7 @@ let booted;
 // Cold-start work, done once and reused across warm invocations.
 function boot() {
   return booted ??= (async () => {
+    const t = Date.now();
     await mkdir(HOME, { recursive: true });
 
     // Secret is a JSON map of env-var-name -> value, same shape book uses. It is
@@ -51,9 +57,11 @@ function boot() {
         console.warn('provider secret is not JSON yet; leaving env untouched');
       }
     }
+    console.log(`timing boot.secret ${since(t)}`);
 
     const userPoolId = process.env.COGNITO_USER_POOL_ID;
     const clientId = await findClientId(userPoolId);
+    console.log(`timing boot.client ${since(t)}`);
 
     // Verifies the sign-in token's signature, issuer, audience and expiry against the pool.
     // Built once per container: it caches the pool's public keys, so only the first request
@@ -63,6 +71,7 @@ function boot() {
       : null;
 
     const resume = await fetch(RESUME_URL).then(r => r.text());
+    console.log(`timing boot.resume ${since(t)}`);
     return {
       verifier,
       html: (await readFile(new URL('./index.html', import.meta.url), 'utf8')).replace(
@@ -115,6 +124,8 @@ const signedIn = async (event, verifier) => {
 // Spawn the CLI and write only its text deltas to the response stream.
 function answer(question, system, out) {
   return new Promise(resolve => {
+    const t = Date.now();
+    let first = true;
     const p = spawn('claude', [
       '-p', question,
       '--system-prompt', system,
@@ -139,19 +150,23 @@ function answer(question, system, out) {
         let ev;
         try { ev = JSON.parse(line); } catch { continue; }
         const inner = ev.type === 'stream_event' ? ev.event : null;
-        if (inner?.type === 'content_block_delta' && inner.delta.type === 'text_delta')
+        if (inner?.type === 'content_block_delta' && inner.delta.type === 'text_delta') {
+          if (first) { first = false; console.log(`timing cli.firstDelta ${since(t)}`); }
           out.write(inner.delta.text);
+        }
         if (ev.type === 'result' && ev.is_error) out.write('\n' + ev.result);
       }
     });
     p.stderr.on('data', d => console.error(String(d)));
     p.on('error', e => { out.write('claude failed to start: ' + e.message); resolve(); });
-    p.on('close', () => resolve());
+    p.on('close', () => { console.log(`timing cli.total ${since(t)}`); resolve(); });
   });
 }
 
 export const handler = awslambda.streamifyResponse(async (event, responseStream) => {
+  const t = Date.now();
   const { html, system, verifier } = await boot();
+  console.log(`timing handler.boot ${since(t)}`);
   const method = event.requestContext?.http?.method ?? 'GET';
 
   const reply = (statusCode, contentType) => awslambda.HttpResponseStream.from(responseStream, {
@@ -167,7 +182,9 @@ export const handler = awslambda.streamifyResponse(async (event, responseStream)
 
   // Before the body is even parsed: signedIn reads the header alone, so there is no
   // reason to unpack a payload from a caller who is about to be turned away.
-  if (!await signedIn(event, verifier)) {
+  const ok = await signedIn(event, verifier);
+  console.log(`timing handler.verified ${since(t)}`);
+  if (!ok) {
     const out = reply(401, 'text/plain; charset=utf-8');
     out.write('not signed in');
     return out.end();
