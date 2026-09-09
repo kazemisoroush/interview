@@ -20,6 +20,12 @@ import (
 // COPY the page next to the handler.
 const appImageFile = "lambda/Dockerfile"
 
+// memoryMB is a CPU setting, not a memory one. The function uses about 375 MB, but memory
+// is how Lambda sells vCPU, and the claude CLI's startup is CPU bound: at 2048 MB it took
+// 30.2s to reach the first streamed character, and at 3008 MB it takes 1.5s warm and 3.4s
+// cold. 3008 is this account's ceiling; a quota increase would allow more.
+const memoryMB = 3008
+
 // envSecretArn tells the handler where to read the provider token.
 const envSecretArn = "PROVIDER_SECRET_ARN"
 
@@ -62,7 +68,7 @@ func NewInterviewStack(scope constructs.Construct, id string, props *awscdk.Stac
 		// Pinned, not defaulted: the image is built by whatever machine runs cdk deploy, so
 		// the function's architecture has to match what the deploy runner produces (arm64).
 		Architecture: awslambda.Architecture_ARM_64(),
-		MemorySize:   jsii.Number(2048),
+		MemorySize:   jsii.Number(memoryMB),
 		Timeout:      awscdk.Duration_Seconds(jsii.Number(60)),
 		Environment:  &map[string]*string{envSecretArn: secret.SecretArn()},
 	})
